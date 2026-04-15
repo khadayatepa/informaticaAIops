@@ -4,107 +4,124 @@ import graphviz
 from openai import OpenAI
 
 # ------------------------------
-# 1. Page Configuration & VISIBILITY FIX
+# 1. Page Config & High-Visibility CSS
 # ------------------------------
-st.set_page_config(page_title="Informatica AIOps Observability", layout="wide")
+st.set_page_config(page_title="Informatica AIOps", layout="wide")
 
-# Enhanced CSS for High-Visibility in Dark Mode
 st.markdown("""
     <style>
-    /* Main Background */
-    .main { background-color: #0e1117; color: white; }
-    
-    /* Metric Card Styling */
+    /* Force high visibility for Metric Cards in Dark Mode */
     div[data-testid="stMetric"] {
         background-color: #1e2130;
         border: 1px solid #3e4251;
-        padding: 15px 20px;
+        padding: 15px;
         border-radius: 10px;
-        color: white; /* Forces overall text to white */
     }
-
-    /* Specifically targeting Metric Labels and Values for visibility */
     div[data-testid="stMetricLabel"] {
-        color: #ccd0d9 !important; /* Light grey for labels */
-        font-size: 1rem !important;
+        color: #00d4ff !important; /* Bright Cyan for Labels */
+        font-weight: bold;
     }
-    
     div[data-testid="stMetricValue"] {
-        color: #ffffff !important; /* Pure white for values */
-        font-weight: bold !important;
+        color: #ffffff !important; /* Pure White for Values */
     }
-
-    /* Expander Styling */
-    .streamlit-expanderHeader {
-        background-color: #1e2130;
-        border-radius: 5px;
+    /* Style for the selectbox to make it stand out */
+    .stSelectbox label {
+        color: #ffffff !important;
+        font-size: 1.2rem;
     }
     </style>
     """, unsafe_allow_html=True)
 
 # ------------------------------
-# 2. Reality-Based Data Model
+# 2. Production Metadata Model
 # ------------------------------
-workflow_data = {
-    "wf_sales_ingestion_daily": {
-        "server": "INFA_PROD_NODE_01",
-        "db_name": "SALES_DB",
-        "integration": "Kafka + Oracle Connection",
+# Mapping real Informatica hierarchy: Workflow -> Sessions
+raw_data = {
+    "wf_sales_daily": {
+        "status": "FAILED",
+        "server": "INFA_NODE_01",
+        "db": "SALES_DB",
         "tasks": [
-            {"task": "s_m_pre_check", "type": "Command", "status": "SUCCESS", "log": "Script success", "src": "N/A", "tgt": "N/A"},
-            {"task": "s_m_load_stg_sales", "type": "Session", "status": "SUCCESS", "log": "Success", "src": "Oracle_Prod", "tgt": "Staging_DB"},
-            {"task": "s_m_transform_fact", "type": "Session", "status": "FAILED", "log": "ORA-01653: unable to extend table SALES.FACT_SALES by 128 in tablespace DATA_TS", "src": "Staging_DB", "tgt": "Snowflake_DWH"},
-            {"task": "s_m_post_cleanup", "type": "Session", "status": "NOT_STARTED", "log": "N/A", "src": "N/A", "tgt": "N/A"}
+            {"name": "s_m_stage", "status": "SUCCESS", "log": "Success", "src": "Oracle", "tgt": "Staging"},
+            {"name": "s_m_load", "status": "FAILED", "log": "ORA-01653: tablespace full", "src": "Staging", "tgt": "Snowflake"}
+        ]
+    },
+    "wf_cust_sync": {
+        "status": "SUCCESS",
+        "server": "INFA_NODE_02",
+        "db": "CRM_DB",
+        "tasks": [
+            {"name": "s_m_upsert", "status": "SUCCESS", "log": "Success", "src": "SAP", "tgt": "Oracle"}
         ]
     }
 }
 
 # ------------------------------
-# 3. Sidebar & API Key
+# 3. Sidebar & Logic
 # ------------------------------
 with st.sidebar:
-    st.title("🛡️ Ops Control")
-    api_key = st.text_input("OpenAI API Key", type="password")
+    st.title("🛡️ Controls")
+    api_key = st.text_input("OpenAI Key", type="password")
     client = OpenAI(api_key=api_key) if api_key else None
 
+def get_routing(log):
+    if "ORA-" in log.upper(): return "DBA TEAM", "Database Issue"
+    return "INFA TEAM", "Application Issue"
+
 # ------------------------------
-# 4. Main UI
+# 4. Filter Logic (THE KEY FEATURE)
 # ------------------------------
 st.title("🚀 Informatica AI Observability")
 
-selected_wf_name = st.selectbox("Select Workflow", list(workflow_data.keys()))
-wf_details = workflow_data[selected_wf_name]
-tasks = wf_details['tasks']
+# This creates the filter you asked for
+view_filter = st.radio("🔍 Filter Dashboard By Status:", ["ALL", "FAILED", "SUCCESS"], horizontal=True)
 
-# --- KPI Row (Now with Fixed Visibility) ---
-failed_tasks = [t for t in tasks if t['status'] == 'FAILED']
-m1, m2, m3, m4 = st.columns(4)
+# Filter the workflow list based on selection
+filtered_wfs = {k: v for k, v in raw_data.items() if view_filter == "ALL" or v['status'] == view_filter}
 
-# Status logic for delta color
-status_val = "FAILED" if failed_tasks else "HEALTHY"
-m1.metric("Workflow Status", status_val)
-m2.metric("Total Tasks", len(tasks))
-m3.metric("Infra Node", wf_details['server'])
-m4.metric("Target DB", wf_details['db_name'])
+if not filtered_wfs:
+    st.warning(f"No Workflows found with status: {view_filter}")
+else:
+    # Top Metrics for the Filtered View
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Workflows Visible", len(filtered_wfs))
+    m2.metric("Total Sessions", sum(len(v['tasks']) for v in filtered_wfs.values()))
+    m3.metric("Selected View", view_filter)
 
-# --- Visual Pipeline ---
-st.subheader("🔄 Visual Pipeline")
-dot = graphviz.Digraph()
-dot.attr(rankdir='LR', bgcolor='transparent')
+    st.divider()
 
-for i, task in enumerate(tasks):
-    node_color = "#ff4b4b" if task['status'] == "FAILED" else "#00c853" if task['status'] == "SUCCESS" else "#757575"
-    dot.node(task['task'], f"{task['task']}\n({task['type']})", 
-             color=node_color, fontcolor='white', style='filled', shape='box')
+    # ------------------------------
+    # 5. Visual Pipeline & Detail View
+    # ------------------------------
+    selected_name = st.selectbox("Select a Workflow to inspect:", list(filtered_wfs.keys()))
+    wf = filtered_wfs[selected_name]
+
+    # Visual DAG
+    dot = graphviz.Digraph()
+    dot.attr(rankdir='LR', bgcolor='transparent')
+    for i, t in enumerate(wf['tasks']):
+        node_col = "#ff4b4b" if t['status'] == "FAILED" else "#00c853"
+        dot.node(t['name'], f"{t['name']}\n({t['status']})", color=node_col, fontcolor="white", style="filled")
+        if i < len(wf['tasks']) - 1:
+            dot.edge(t['name'], wf['tasks'][i+1]['name'], color="white")
     
-    if i < len(tasks) - 1:
-        dot.edge(task['task'], tasks[i+1]['task'], color="#ffffff")
+    st.graphviz_chart(dot)
 
-st.graphviz_chart(dot)
-
-# --- Task Details ---
-st.subheader("📋 Session Investigation")
-for task in tasks:
-    with st.expander(f"{task['task']} - {task['status']}"):
-        st.write(f"**Source:** {task['src']} | **Target:** {task['tgt']}")
-        st.code(task['log'], language="log")
+    # Breakdown Table
+    for task in wf['tasks']:
+        with st.expander(f"Task: {task['name']} - {task['status']}"):
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                st.write(f"**Source:** {task['src']} | **Target:** {task['tgt']}")
+                if task['status'] == "FAILED":
+                    team, cat = get_routing(task['log'])
+                    st.error(f"Owner: {team}")
+            with c2:
+                st.code(task['log'])
+                if task['status'] == "FAILED" and client:
+                    if st.button("AI Analyze", key=task['name']):
+                        resp = client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[{"role": "user", "content": f"Fix this Infa error: {task['log']}"}]
+                        )
+                        st.info(resp.choices[0].message.content)
